@@ -14,6 +14,7 @@ from scipy.spatial.transform import Rotation as R
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
 from diffusion_policy.workspace.base_workspace import BaseWorkspace
 from umi.common.cv_util import draw_predefined_mask
+from umi.common.pose_util import mat_to_rot6d, rot6d_to_mat
 from umi.real_world.real_inference_util import get_real_obs_resolution, get_real_umi_action, get_real_umi_obs_dict
 from diffusion_policy.common.pytorch_util import dict_apply
 import omegaconf
@@ -121,6 +122,8 @@ class PolicyInferenceNode:
         self.get_class_start_time = time.monotonic()
 
         cls = hydra.utils.get_class(self.cfg._target_)
+
+        self.image_obs_history: int = self.cfg.shape_meta.obs.camera0_rgb.horizon
         self.workspace = cls(self.cfg)
         self.workspace: BaseWorkspace
         self.workspace.load_payload(payload, exclude_keys=None, include_keys=None)
@@ -160,9 +163,9 @@ class PolicyInferenceNode:
         """
         Currently only support single robot
         obs_dict_np: dict # All absolute pose
-            "robot{i}_eef_xyz_wxyz": (N, 7)
-            "robot{i}_gripper_width": (N, 1)
-            "robot{i}_wrist_camera": (N, H, W, 3)
+            "robot{i}_eef_xyz_wxyz": (N, 7), np.float64
+            "robot{i}_gripper_width": (N, 1), np.float64
+            "robot{i}_wrist_camera": (N, H, W, 3), np.uint8
         """
         if self.episode_start_pose_pos_rotvec is None:
             pos = obs_dict_np["robot0_eef_xyz_wxyz"][0, :3]
@@ -171,11 +174,12 @@ class PolicyInferenceNode:
 
         assert self.episode_start_pose_pos_rotvec is not None
         
-        eef_xyz_wxyz = obs_dict_np.pop("robot0_eef_xyz_wxyz")
+        eef_xyz_wxyz = obs_dict_np.pop("robot0_eef_xyz_wxyz") # (N, 7)
         # eef_xyz_wxyz_wrt_start = get_relative_pose(eef_xyz_wxyz, self.episode_start_pose)
-        obs_dict_np["robot0_eef_pos"] = eef_xyz_wxyz[:3]
-        obs_dict_np["robot0_eef_rot_axis_angle"] = R.from_quat(to_xyzw(eef_xyz_wxyz[3:])).as_rotvec()
-        # obs_dict_np["robot0_eef_rot_axis_angle_wrt_start"] = R.from_quat(to_xyzw(eef_xyz_wxyz_wrt_start[3:])).as_rotvec()
+        obs_dict_np["robot0_eef_pos"] = eef_xyz_wxyz[:, :3]
+        eef_rot_mat = R.from_quat(to_xyzw(eef_xyz_wxyz[:, 3:])).as_matrix()
+        obs_dict_np["robot0_eef_rot_axis_angle"] = mat_to_rot6d(eef_rot_mat)
+        obs_dict_np["robot0_eef_rot_axis_angle_wrt_start"] = mat_to_rot6d(eef_rot_mat @ R.from_rotvec(self.episode_start_pose_pos_rotvec[3:]).as_matrix())
         obs_dict_np["camera0_rgb"] = draw_predefined_mask(
             obs_dict_np.pop("robot0_wrist_camera"),
             color=(0, 0, 0),
@@ -184,7 +188,15 @@ class PolicyInferenceNode:
             finger=False,
             use_aa=True,
         )
+        obs_dict_np["camera0_rgb"] = obs_dict_np["camera0_rgb"].transpose(0, 3, 1, 2)
         obs_dict_np["robot0_gripper_width"] = obs_dict_np.pop("robot0_gripper_width")
+
+
+        obs_dict_np["camera0_rgb"] = obs_dict_np["camera0_rgb"][-self.image_obs_history:]
+
+        for k, v in obs_dict_np.items():
+            print(f"{k}: {v.shape}")
+
 
         """
         obs_dict_np: dict
@@ -201,28 +213,42 @@ class PolicyInferenceNode:
             action = result['action_pred'][0].detach().to('cpu').numpy()
             del result
             del obs_dict
-        return action
+
+        # Action: (N, 10) xyz, rot_mat_6d, gripper_width
+        pos = action[:, :3]
+        rot_wxyz = to_wxyz(R.from_matrix(rot6d_to_mat(action[:, 3:9])).as_quat())
+        gripper_width = action[:, 9:]
+
+        action_dict = {
+            "robot0_eef_xyz_wxyz": np.concatenate([pos, rot_wxyz], axis=-1),
+            "robot0_gripper_width": gripper_width,
+        }
+        return action_dict
     
     def run_node(self):
         while True:
             raw_data, topic = self.rmq_server.wait_for_request(timeout_s=1)
+            if topic == "":
+                continue
             if topic == "reset":
                 self.reset()
                 self.rmq_server.reply_request(topic="reset", data=serialize("OK"))
                 print("Done policy reset")
                 continue
-            obs_dict_np = deserialize(raw_data)
             try:
+                obs_dict_np = deserialize(raw_data)
                 assert topic == "policy_inference"
                 start_time = time.monotonic()
                 action = self.predict_action(obs_dict_np)
                 print(f'Inference time: {time.monotonic() - start_time:.3f} s')
             except Exception as e:
+                print(f"Enter error handling")
                 err_str = echo_exception()
                 print(f'Error: {err_str}')
                 action = err_str
             send_start_time = time.monotonic()
-            self.rmq_server.reply_request(topic="policy_inference", data=serialize(action))
+            self.rmq_server.reply_request(topic="policy_inference", data=serialize(
+                action))
             print(f'Send time: {time.monotonic() - send_start_time:.3f} s')
     
 @click.command()
