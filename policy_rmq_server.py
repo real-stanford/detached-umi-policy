@@ -161,12 +161,16 @@ class PolicyInferenceNode:
 
     def predict_action(self, obs_dict_np: dict[str, Any]):
         """
+        Observation should be relative to the end pose (the last observation will be close to 0)
+        Action is relative to the start pose (the first action will be close to 0)
         Currently only support single robot
         obs_dict_np: dict # All absolute pose
             "robot{i}_eef_xyz_wxyz": (N, 7), np.float64
             "robot{i}_gripper_width": (N, 1), np.float64
             "robot{i}_wrist_camera": (N, H, W, 3), np.uint8
         """
+        if "timestamps" in obs_dict_np:
+            obs_dict_np.pop("timestamps")
         if self.episode_start_pose_pos_rotvec is None:
             pos = obs_dict_np["robot0_eef_xyz_wxyz"][0, :3]
             rotvec = R.from_quat(to_xyzw(obs_dict_np["robot0_eef_xyz_wxyz"][0, 3:])).as_rotvec()
@@ -194,8 +198,9 @@ class PolicyInferenceNode:
 
         obs_dict_np["camera0_rgb"] = obs_dict_np["camera0_rgb"][-self.image_obs_history:]
 
-        for k, v in obs_dict_np.items():
-            print(f"{k}: {v.shape}")
+        if obs_dict_np["camera0_rgb"].dtype == np.uint8:
+            obs_dict_np["camera0_rgb"] = obs_dict_np["camera0_rgb"].astype(np.float32) / 255.0
+
 
 
         """
@@ -220,8 +225,8 @@ class PolicyInferenceNode:
         gripper_width = action[:, 9:]
 
         action_dict = {
-            "robot0_eef_xyz_wxyz": np.concatenate([pos, rot_wxyz], axis=-1),
-            "robot0_gripper_width": gripper_width,
+            "action0_eef_xyz_wxyz": np.concatenate([pos, rot_wxyz], axis=-1),
+            "action0_gripper_width": gripper_width,
         }
         return action_dict
     
