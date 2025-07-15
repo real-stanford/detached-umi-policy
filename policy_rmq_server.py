@@ -20,7 +20,7 @@ from diffusion_policy.common.pytorch_util import dict_apply
 import omegaconf
 import traceback
 from robotmq import RMQServer, serialize, deserialize
-
+import cv2
 def echo_exception():
     exc_type, exc_value, exc_traceback = sys.exc_info()
     # Extract unformatted traceback
@@ -118,7 +118,7 @@ class PolicyInferenceNode:
             f.write(omegaconf.OmegaConf.to_yaml(self.cfg))
             print(f"Exported config to {cfg_path}")
         print(f"Loading configure: {self.cfg.name}, workspace: {self.cfg._target_}, policy: {self.cfg.policy._target_}, model_name: {self.cfg.policy.obs_encoder.model_name}")
-        self.obs_res = get_real_obs_resolution(self.cfg.task.shape_meta)
+        self.obs_res = get_real_obs_resolution(self.cfg.task.shape_meta) # (W, H)
         self.get_class_start_time = time.monotonic()
 
         cls = hydra.utils.get_class(self.cfg._target_)
@@ -184,24 +184,36 @@ class PolicyInferenceNode:
         eef_rot_mat = R.from_quat(to_xyzw(eef_xyz_wxyz[:, 3:])).as_matrix()
         obs_dict_np["robot0_eef_rot_axis_angle"] = mat_to_rot6d(eef_rot_mat)
         obs_dict_np["robot0_eef_rot_axis_angle_wrt_start"] = mat_to_rot6d(eef_rot_mat @ R.from_rotvec(self.episode_start_pose_pos_rotvec[3:]).as_matrix())
-        obs_dict_np["camera0_rgb"] = draw_predefined_mask(
-            obs_dict_np.pop("robot0_wrist_camera"),
-            color=(0, 0, 0),
-            mirror=True,
-            gripper=True,
-            finger=False,
-            use_aa=True,
-        )
-        obs_dict_np["camera0_rgb"] = obs_dict_np["camera0_rgb"].transpose(0, 3, 1, 2)
+
+        wrist_camera_NHWC = obs_dict_np.pop("robot0_wrist_camera")[-self.image_obs_history:]
+
+        assert self.obs_res[0] == self.obs_res[1], "W and H must be the same, but got {} and {}".format(self.obs_res[0], self.obs_res[1])
+        masked_imgs = []
+        for i in range(self.image_obs_history):
+            h = wrist_camera_NHWC.shape[1]
+            w = wrist_camera_NHWC.shape[2]
+            width_edge_size = (w - h) // 2
+            cropped_img = wrist_camera_NHWC[i, :, width_edge_size:h+width_edge_size, :]
+            masked_img = draw_predefined_mask(
+                cropped_img,
+                color=(0, 0, 0),
+                mirror=True,
+                gripper=True,
+                finger=False,
+                use_aa=True,
+            )
+            masked_img = cv2.resize(masked_img, (self.obs_res[1], self.obs_res[0]))
+            cv2.imshow("masked_img", masked_img)
+            cv2.waitKey(1)
+            masked_imgs.append(masked_img)
+
+        masked_imgs = np.stack(masked_imgs, axis=0)
+        obs_dict_np["camera0_rgb"] = masked_imgs.transpose(0, 3, 1, 2)
+
         obs_dict_np["robot0_gripper_width"] = obs_dict_np.pop("robot0_gripper_width")
-
-
-        obs_dict_np["camera0_rgb"] = obs_dict_np["camera0_rgb"][-self.image_obs_history:]
 
         if obs_dict_np["camera0_rgb"].dtype == np.uint8:
             obs_dict_np["camera0_rgb"] = obs_dict_np["camera0_rgb"].astype(np.float32) / 255.0
-
-
 
         """
         obs_dict_np: dict
