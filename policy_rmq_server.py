@@ -203,7 +203,9 @@ class PolicyInferenceNode:
                 use_aa=True,
             )
             masked_img = cv2.resize(masked_img, (self.obs_res[1], self.obs_res[0]))
-            cv2.imshow("masked_img", masked_img)
+
+            masked_img_bgr = cv2.cvtColor(masked_img, cv2.COLOR_RGB2BGR)
+            cv2.imshow("masked_img", masked_img_bgr)
             cv2.waitKey(1)
             masked_imgs.append(masked_img)
 
