@@ -151,7 +151,7 @@ class PolicyInferenceNode:
         else:
             self.rmq_server.add_topic("policy_inference", message_remaining_time_s=10)
 
-        self.rmq_server.add_topic("reset", message_remaining_time_s=10)
+        self.rmq_server.add_topic("policy_reset", message_remaining_time_s=10)
 
         # States
         self.episode_start_pose_pos_rotvec: Optional[npt.NDArray[np.float64]] = None
@@ -249,9 +249,9 @@ class PolicyInferenceNode:
             raw_data, topic = self.rmq_server.wait_for_request(timeout_s=1)
             if topic == "":
                 continue
-            if topic == "reset":
+            if topic == "policy_reset":
                 self.reset()
-                self.rmq_server.reply_request(topic="reset", data=serialize("OK"))
+                self.rmq_server.reply_request(topic="policy_reset", data=serialize("OK"))
                 print("Done policy reset")
                 continue
             try:
@@ -273,7 +273,7 @@ class PolicyInferenceNode:
 @click.command()
 @click.option('--input', '-i', required=True, help='Path to checkpoint')
 @click.option('--ip', default="0.0.0.0")
-@click.option('--port', default=8766, help="Port to listen on")
+@click.option('--port', default=18765, help="Port to listen on")
 @click.option('--device', default="cuda", help="Device to run on")
 @click.option('--use_shared_memory', is_flag=True, default=False, help="Use shared memory for communication")
 def main(input, ip, port, device, use_shared_memory):
