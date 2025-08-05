@@ -157,6 +157,7 @@ class PolicyInferenceNode:
         self.episode_start_pose_pos_rotvec: Optional[npt.NDArray[np.float64]] = None
     
     def reset(self):
+        print("Resetting policy")
         self.episode_start_pose_pos_rotvec = None
 
     def predict_action(self, obs_dict_np: dict[str, Any]):
@@ -171,6 +172,8 @@ class PolicyInferenceNode:
         """
         if "timestamps" in obs_dict_np:
             obs_dict_np.pop("timestamps")
+        if "episode_idx" in obs_dict_np:
+            episode_idx = obs_dict_np.pop("episode_idx")
         if self.episode_start_pose_pos_rotvec is None:
             pos = obs_dict_np["robot0_eef_xyz_wxyz"][0, :3]
             rotvec = R.from_quat(to_xyzw(obs_dict_np["robot0_eef_xyz_wxyz"][0, 3:])).as_rotvec()
@@ -184,6 +187,7 @@ class PolicyInferenceNode:
         eef_rot_mat = R.from_quat(to_xyzw(eef_xyz_wxyz[:, 3:])).as_matrix()
         obs_dict_np["robot0_eef_rot_axis_angle"] = mat_to_rot6d(eef_rot_mat)
         obs_dict_np["robot0_eef_rot_axis_angle_wrt_start"] = mat_to_rot6d(eef_rot_mat @ R.from_rotvec(self.episode_start_pose_pos_rotvec[3:]).as_matrix())
+        print(R.from_matrix(eef_rot_mat @ R.from_rotvec(self.episode_start_pose_pos_rotvec[3:]).as_matrix()).as_rotvec())
 
         wrist_camera_NHWC = obs_dict_np.pop("robot0_wrist_camera")[-self.image_obs_history:]
 
