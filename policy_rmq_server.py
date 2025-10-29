@@ -112,6 +112,11 @@ class PolicyInferenceNode:
             self.ckpt_path = os.path.join(self.ckpt_path, 'checkpoints', 'latest.ckpt')
         payload = torch.load(open(self.ckpt_path, 'rb'), map_location='cpu', pickle_module=dill)
         self.cfg = payload['cfg']
+        omegaconf.OmegaConf.set_struct(self.cfg, False)
+        self.cfg["policy_name"] = "diffusion_unet"
+        self.cfg["run_name"] = self.cfg["name"]
+        self.cfg["date_str"] = "2024-01-22"
+        self.cfg["time_str"] = "09-28-26"
         # export cfg to yaml
         cfg_path = self.ckpt_path.replace('.ckpt', '.yaml')
         with open(cfg_path, 'w') as f:
@@ -152,6 +157,7 @@ class PolicyInferenceNode:
             self.rmq_server.add_topic("policy_inference", message_remaining_time_s=10)
 
         self.rmq_server.add_topic("policy_reset", message_remaining_time_s=10)
+        self.rmq_server.add_topic("policy_config", message_remaining_time_s=10)
 
         # States
         self.episode_start_pose_pos_rotvec: Optional[npt.NDArray[np.float64]] = None
@@ -247,7 +253,6 @@ class PolicyInferenceNode:
             "action0_gripper_width": gripper_width,
         }
         return action_dict
-    
     def run_node(self):
         while True:
             raw_data, topic = self.rmq_server.wait_for_request(timeout_s=1)
@@ -257,6 +262,11 @@ class PolicyInferenceNode:
                 self.reset()
                 self.rmq_server.reply_request(topic="policy_reset", data=serialize("OK"))
                 print("Done policy reset")
+                continue
+            elif topic == "policy_config":
+                self.rmq_server.reply_request(
+                    topic="policy_config", data=serialize(self.cfg)
+                )
                 continue
             try:
                 obs_dict_np = deserialize(raw_data)
