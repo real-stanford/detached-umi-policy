@@ -117,6 +117,7 @@ class PolicyInferenceNode:
         self.cfg["run_name"] = self.cfg["name"]
         self.cfg["date_str"] = "2024-01-22"
         self.cfg["time_str"] = "09-28-26"
+        self.cfg["epoch"] = 121
         # export cfg to yaml
         cfg_path = self.ckpt_path.replace('.ckpt', '.yaml')
         with open(cfg_path, 'w') as f:
@@ -159,12 +160,9 @@ class PolicyInferenceNode:
         self.rmq_server.add_topic("policy_reset", message_remaining_time_s=10)
         self.rmq_server.add_topic("policy_config", message_remaining_time_s=10)
 
-        # States
-        self.episode_start_pose_pos_rotvec: Optional[npt.NDArray[np.float64]] = None
     
     def reset(self):
         print("Resetting policy")
-        self.episode_start_pose_pos_rotvec = None
 
     def predict_action(self, obs_dict_np: dict[str, Any]):
         """
@@ -180,44 +178,46 @@ class PolicyInferenceNode:
             obs_dict_np.pop("timestamps")
         if "episode_idx" in obs_dict_np:
             episode_idx = obs_dict_np.pop("episode_idx")
-        if self.episode_start_pose_pos_rotvec is None:
-            pos = obs_dict_np["robot0_eef_xyz_wxyz"][0, :3]
-            rotvec = R.from_quat(to_xyzw(obs_dict_np["robot0_eef_xyz_wxyz"][0, 3:])).as_rotvec()
-            self.episode_start_pose_pos_rotvec = np.concatenate([pos, rotvec])
-
-        assert self.episode_start_pose_pos_rotvec is not None
         
         eef_xyz_wxyz = obs_dict_np.pop("robot0_eef_xyz_wxyz") # (N, 7)
         # eef_xyz_wxyz_wrt_start = get_relative_pose(eef_xyz_wxyz, self.episode_start_pose)
         obs_dict_np["robot0_eef_pos"] = eef_xyz_wxyz[:, :3]
         eef_rot_mat = R.from_quat(to_xyzw(eef_xyz_wxyz[:, 3:])).as_matrix()
         obs_dict_np["robot0_eef_rot_axis_angle"] = mat_to_rot6d(eef_rot_mat)
-        obs_dict_np["robot0_eef_rot_axis_angle_wrt_start"] = mat_to_rot6d(eef_rot_mat @ R.from_rotvec(self.episode_start_pose_pos_rotvec[3:]).as_matrix())
-        print(R.from_matrix(eef_rot_mat @ R.from_rotvec(self.episode_start_pose_pos_rotvec[3:]).as_matrix()).as_rotvec())
+        eef_wrt_start_xyz_wxyz = obs_dict_np.pop("robot0_eef_wrt_start_xyz_wxyz")
+        obs_dict_np["robot0_eef_rot_axis_angle_wrt_start"] = mat_to_rot6d(R.from_quat(to_xyzw(eef_wrt_start_xyz_wxyz[:, 3:])).as_matrix())
 
-        wrist_camera_NHWC = obs_dict_np.pop("robot0_wrist_camera")[-self.image_obs_history:]
+        wrist_camera_NHWC = obs_dict_np.pop("robot0_main_camera")[-self.image_obs_history:]
 
         assert self.obs_res[0] == self.obs_res[1], "W and H must be the same, but got {} and {}".format(self.obs_res[0], self.obs_res[1])
+
+
         masked_imgs = []
         for i in range(self.image_obs_history):
-            h = wrist_camera_NHWC.shape[1]
-            w = wrist_camera_NHWC.shape[2]
-            width_edge_size = (w - h) // 2
-            cropped_img = wrist_camera_NHWC[i, :, width_edge_size:h+width_edge_size, :]
-            masked_img = draw_predefined_mask(
-                cropped_img,
-                color=(0, 0, 0),
-                mirror=True,
-                gripper=True,
-                finger=False,
-                use_aa=True,
-            )
-            masked_img = cv2.resize(masked_img, (self.obs_res[1], self.obs_res[0]))
+            # If image is already masked and cropped:
+            resized_img = cv2.resize(wrist_camera_NHWC[i], (self.obs_res[1], self.obs_res[0]))
+            masked_imgs.append(resized_img)
 
-            masked_img_bgr = cv2.cvtColor(masked_img, cv2.COLOR_RGB2BGR)
-            cv2.imshow("masked_img", masked_img_bgr)
-            cv2.waitKey(1)
-            masked_imgs.append(masked_img)
+            # If image is not masked and cropped:
+            # h = wrist_camera_NHWC.shape[1]
+            # w = wrist_camera_NHWC.shape[2]
+            # width_edge_size = (w - h) // 2
+            # cropped_img = wrist_camera_NHWC[i, :, width_edge_size:h+width_edge_size, :]
+            # masked_img = draw_predefined_mask(
+            #     cropped_img,
+            #     color=(0, 0, 0),
+            #     mirror=True,
+            #     gripper=True,
+            #     finger=False,
+            #     use_aa=True,
+            # )
+            # masked_img = cv2.resize(masked_img, (self.obs_res[1], self.obs_res[0]))
+
+            # masked_img_bgr = cv2.cvtColor(masked_img, cv2.COLOR_RGB2BGR)
+            # cv2.imshow("masked_img", masked_img_bgr)
+            # cv2.waitKey(1)
+            # masked_imgs.append(masked_img)
+        
 
         masked_imgs = np.stack(masked_imgs, axis=0)
         obs_dict_np["camera0_rgb"] = masked_imgs.transpose(0, 3, 1, 2)
@@ -226,6 +226,9 @@ class PolicyInferenceNode:
 
         if obs_dict_np["camera0_rgb"].dtype == np.uint8:
             obs_dict_np["camera0_rgb"] = obs_dict_np["camera0_rgb"].astype(np.float32) / 255.0
+
+        for k, v in obs_dict_np.items():
+            print(k, v.shape)
 
         """
         obs_dict_np: dict
